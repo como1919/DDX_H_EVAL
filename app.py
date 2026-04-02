@@ -5,9 +5,14 @@ import drive_logic as drv
 import time
 
 # --- 설정 ---
-FOLDER_ID = "1XwOMh-_VRBIgs59VkgyaOKfsqtrAxGB1"
-MASTER_FILE_ID = "1vG7YR8eauH6Gtyak5BJDDHS0zPU692HG"
-RESULT_SHEET_NAME = "Evaluation_Results"
+try:
+    gdrive_conf = st.secrets["gdrive"]
+    FOLDER_ID = str(gdrive_conf["folder_id"]).strip()
+    MASTER_FILE_ID = str(gdrive_conf["master_file_id"]).strip()
+    RESULT_SHEET_NAME = str(gdrive_conf["result_sheet_name"]).strip()
+except Exception:
+    st.error("gdrive 설정이 누락되었거나 형식이 올바르지 않습니다. Secrets를 확인해주세요.")
+    st.stop()
 
 st.set_page_config(page_title="의료 평가 시스템", layout="wide")
 
