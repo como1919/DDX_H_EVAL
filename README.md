@@ -36,9 +36,14 @@ auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "..."
 universe_domain = "googleapis.com"
 
+[gdrive]
+folder_id = "..."
+master_file_id = "..."
+result_sheet_name = "Evaluation_Results"
+
 [allowed_users]
-홍길동 = "1234"
-김의사 = "5678"
+"홍길동" = "1234"
+"김의사" = "5678"
 ```
 
 3. 앱 실행
@@ -57,4 +62,3 @@ streamlit run app.py
 3. Repository / Branch(`main`) / Main file(`app.py`) 선택
 4. `Advanced settings > Secrets`에 `secrets.toml` 내용 붙여넣기
 5. Deploy
-

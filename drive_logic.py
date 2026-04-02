@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload # 이 부분 수정
 
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
 def get_gdrive_service():
     """Secrets에서 인증 정보를 가져와 Google Drive 서비스 객체 생성"""
@@ -15,7 +15,7 @@ def get_gdrive_service():
     return build('drive', 'v3', credentials=creds)
 
 def get_gspread_client():
-    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.readonly']
     creds_info = st.secrets["gcp_service_account"]
     creds = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
     return gspread.authorize(creds)
@@ -55,6 +55,31 @@ def append_result_to_sheet(sheet_name, row_data):
             return False
 
     sheet.append_row(row_data)
+
+    # 동시성 상황에서 중복 append가 발생할 수 있어, 저장 직후 키 기준으로 중복 행을 정리한다.
+    all_values = sheet.get_all_values()
+    if not all_values:
+        return True
+
+    headers = [str(h).strip() for h in all_values[0]]
+    if "eval_id" not in headers or "user_id" not in headers:
+        return True
+
+    eval_col_idx = headers.index("eval_id")
+    user_col_idx = headers.index("user_id")
+
+    matched_rows = []
+    for row_idx, row in enumerate(all_values[1:], start=2):
+        row_eval_id = str(row[eval_col_idx]).strip() if eval_col_idx < len(row) else ""
+        row_user_id = str(row[user_col_idx]).strip() if user_col_idx < len(row) else ""
+        if row_eval_id == eval_id and row_user_id == user_id:
+            matched_rows.append(row_idx)
+
+    if len(matched_rows) > 1:
+        # 가장 먼저 저장된 1개를 남기고 나머지를 삭제
+        for dup_row_idx in reversed(matched_rows[1:]):
+            sheet.delete_rows(dup_row_idx)
+
     return True
 
 
@@ -85,7 +110,7 @@ def get_existing_results(sheet_name):
             return pd.DataFrame()
             
         return pd.DataFrame(data)
-    except Exception as e:
+    except Exception:
         # 파일이 없거나 시트가 비어있을 경우 빈 데이터프레임 반환
-        st.warning(f"기존 기록을 불러올 수 없습니다 (처음 시작하거나 시트 확인 필요): {e}")
+        st.warning("기존 기록을 불러올 수 없습니다 (초기 상태 또는 권한/시트 확인 필요).")
         return pd.DataFrame()

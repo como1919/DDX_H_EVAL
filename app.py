@@ -4,6 +4,8 @@ import datetime
 import drive_logic as drv
 import time
 
+st.set_page_config(page_title="의료 평가 시스템", layout="wide")
+
 # --- 설정 ---
 try:
     gdrive_conf = st.secrets["gdrive"]
@@ -14,16 +16,25 @@ except Exception:
     st.error("gdrive 설정이 누락되었거나 형식이 올바르지 않습니다. Secrets를 확인해주세요.")
     st.stop()
 
-st.set_page_config(page_title="의료 평가 시스템", layout="wide")
-
 if 'auth' not in st.session_state:
     st.session_state.auth = False
 if 'user_id' not in st.session_state:
     st.session_state.user_id = ""
+if 'login_fail_count' not in st.session_state:
+    st.session_state.login_fail_count = 0
+if 'lock_until' not in st.session_state:
+    st.session_state.lock_until = None
 
 # --- 로그인 ---
 if not st.session_state.auth:
     st.title("👨‍⚕️ 전문의 평가 로그인")
+    now = datetime.datetime.now()
+    lock_until = st.session_state.lock_until
+    if lock_until and now < lock_until:
+        remaining = int((lock_until - now).total_seconds())
+        st.error(f"로그인 시도 제한 중입니다. {remaining}초 후 다시 시도해주세요.")
+        st.stop()
+
     with st.form("login"):
         name = st.text_input("성함")
         pin = st.text_input("PIN (4자리)", type="password")
@@ -46,11 +57,20 @@ if not st.session_state.auth:
 
                 expected_pin = str(allowed_users.get(entered_name, "")).strip()
                 if expected_pin and expected_pin == entered_pin:
-                    st.session_state.user_id = f"{entered_name}_{entered_pin}"
+                    st.session_state.user_id = entered_name
                     st.session_state.auth = True
+                    st.session_state.login_fail_count = 0
+                    st.session_state.lock_until = None
                     st.rerun()
                 else:
-                    st.error("성함 또는 PIN이 올바르지 않습니다.")
+                    st.session_state.login_fail_count += 1
+                    fail_count = st.session_state.login_fail_count
+                    if fail_count >= 5:
+                        st.session_state.lock_until = now + datetime.timedelta(minutes=5)
+                        st.error("로그인 실패 횟수가 많아 5분간 잠금됩니다.")
+                    else:
+                        time.sleep(min(fail_count, 3))
+                        st.error("성함 또는 PIN이 올바르지 않습니다.")
     st.stop()
 
 # --- 데이터 로드 및 필터링 ---
@@ -70,14 +90,17 @@ try:
     res_df = drv.get_existing_results(RESULT_SHEET_NAME)
     
     if not res_df.empty:
-        # 로그인한 유저 데이터만 필터링
-        user_res = res_df[res_df['user_id'].astype(str).str.strip() == st.session_state.user_id]
+        # 로그인한 유저 데이터만 필터링 (구버전 user_id: "이름_PIN" 형식과 호환)
+        current_user = st.session_state.user_id
+        user_col = res_df['user_id'].astype(str).str.strip()
+        user_mask = user_col.eq(current_user) | user_col.str.startswith(f"{current_user}_")
+        user_res = res_df[user_mask]
         # 시트의 eval_id도 정규화
         done_ids = user_res['eval_id'].apply(normalize_id).unique().tolist()
     else:
         done_ids = []
 except Exception as e:
-    st.error(f"시트 읽기 오류: {e}")
+    st.error("평가 진행 상태를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
     done_ids = []
 
 # 디버깅용 (사이드바에서 확인 가능)
