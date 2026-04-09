@@ -181,10 +181,72 @@ except Exception as e:
 
 # 디버깅용 (사이드바에서 확인 가능)
 st.sidebar.write(f"현재 유저: {st.session_state.user_id}")
-st.sidebar.write(f"완료된 ID 목록: {done_ids}")
+done_id_set = set(done_ids)
 
-# 필터링
-todo_df = master_df[~master_df['eval_id_str'].isin(done_ids)]
+# 증례 순서 기준 생성 (원본 데이터 순서 기준)
+master_df["_master_order"] = range(len(master_df))
+file_order_df = (
+    master_df[["file_name", "_master_order"]]
+    .drop_duplicates(subset=["file_name"], keep="first")
+    .sort_values("_master_order")
+    .reset_index(drop=True)
+)
+file_order_df["file_order"] = file_order_df.index
+file_order_df["case_label"] = file_order_df["file_order"].apply(lambda x: f"Clinical_Note_{x + 1}")
+
+# 증례(file_name) 단위 진행 현황 계산
+case_total_df = (
+    master_df.groupby("file_name", as_index=False)
+    .size()
+    .rename(columns={"size": "총개수"})
+)
+case_done_df = (
+    master_df[master_df["eval_id_str"].isin(done_id_set)]
+    .groupby("file_name", as_index=False)
+    .size()
+    .rename(columns={"size": "완료개수"})
+)
+case_progress_df = case_total_df.merge(case_done_df, on="file_name", how="left")
+case_progress_df = case_progress_df.merge(
+    file_order_df[["file_name", "file_order", "case_label"]],
+    on="file_name",
+    how="left",
+)
+case_progress_df["완료개수"] = case_progress_df["완료개수"].fillna(0).astype(int)
+case_progress_df["진행률"] = (
+    case_progress_df["완료개수"] / case_progress_df["총개수"] * 100
+).round(0).astype(int).astype(str) + "%"
+case_progress_df["상태"] = case_progress_df.apply(
+    lambda row: "완료"
+    if row["완료개수"] >= row["총개수"]
+    else ("진행중" if row["완료개수"] > 0 else "대기"),
+    axis=1,
+)
+
+completed_case_count = int((case_progress_df["완료개수"] >= case_progress_df["총개수"]).sum())
+total_case_count = int(case_progress_df.shape[0])
+
+st.sidebar.markdown("### 증례 진행 현황")
+st.sidebar.progress(
+    completed_case_count / total_case_count if total_case_count else 0.0,
+    text=f"증례 완료: {completed_case_count} / {total_case_count}",
+)
+st.sidebar.dataframe(
+    case_progress_df.sort_values("file_order").rename(
+        columns={"case_label": "증례", "총개수": "총", "완료개수": "완료"}
+    )[["증례", "완료", "총", "진행률", "상태"]],
+    hide_index=True,
+    use_container_width=True,
+)
+
+# 필터링 + 같은 증례 10개 연속 평가를 위한 정렬
+todo_df = master_df[~master_df["eval_id_str"].isin(done_id_set)].copy()
+if not todo_df.empty:
+    todo_df = (
+        todo_df.merge(file_order_df[["file_name", "file_order"]], on="file_name", how="left")
+        .sort_values(["file_order", "_master_order"])
+        .reset_index(drop=True)
+    )
 
 # --- 화면 출력 ---
 st.title(f"🩺 평가 세션: {st.session_state.user_id.split('_')[0]} 선생님")
@@ -194,6 +256,14 @@ if todo_df.empty:
     st.success("🎉 모든 평가 완료!")
 else:
     current_case = todo_df.iloc[0]
+    current_case_file = str(current_case["file_name"])
+    current_case_label = str(
+        file_order_df.loc[file_order_df["file_name"] == current_case_file, "case_label"].iloc[0]
+    )
+    current_case_done = int(case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "완료개수"].iloc[0])
+    current_case_total = int(case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "총개수"].iloc[0])
+
+    st.caption(f"현재 증례: {current_case_label} ({current_case_done}/{current_case_total} 완료)")
     st.progress(len(done_ids) / len(master_df), text=f"진행도: {len(done_ids)} / {len(master_df)}")
 
     col_text, col_eval = st.columns([2, 1])
