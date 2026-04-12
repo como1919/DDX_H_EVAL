@@ -152,6 +152,7 @@ if not st.session_state.instruction_confirmed:
 # --- 데이터 로드 및 필터링 ---
 service = drv.get_gdrive_service()
 master_df = drv.load_csv(service, MASTER_FILE_ID)
+ANSWER_COL = "진단명-Free Text#30"
 
 # ID 정규화 함수: 1.0이나 " 1 " 같은 데이터를 모두 "1"로 통일
 def normalize_id(x):
@@ -160,7 +161,26 @@ def normalize_id(x):
     except (ValueError, TypeError):
         return str(x).strip()
 
+
+def find_answer_column(df):
+    normalized = {str(c).strip(): c for c in df.columns}
+    if ANSWER_COL in normalized:
+        return normalized[ANSWER_COL]
+
+    for c in df.columns:
+        col = str(c).strip()
+        if col.startswith(ANSWER_COL):
+            return c
+
+    for c in df.columns:
+        col = str(c).strip()
+        if "진단명-Free Text" in col:
+            return c
+
+    return None
+
 master_df['eval_id_str'] = master_df['eval_id'].apply(normalize_id)
+answer_col_name = find_answer_column(master_df)
 
 try:
     res_df = drv.get_existing_results(RESULT_SHEET_NAME)
@@ -283,6 +303,16 @@ else:
                 st.dataframe(ddx_table, hide_index=True, use_container_width=True)
             else:
                 st.info(str(current_case['entered_ddx_list']))
+        with st.expander("✅ 정답 진단명 (Reference)", expanded=True):
+            if answer_col_name:
+                raw_answer = current_case[answer_col_name]
+                answer_text = "" if pd.isna(raw_answer) else str(raw_answer).strip()
+                if answer_text:
+                    st.text(answer_text)
+                else:
+                    st.info("정답 DDX 값이 비어 있습니다.")
+            else:
+                st.warning("정답 DDX 컬럼이 없어 아직 표시할 수 없습니다. evaluation_master.csv를 재생성해주세요.")
 
     with col_eval:
         st.subheader("📝 평가")
