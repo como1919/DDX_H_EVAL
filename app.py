@@ -3,8 +3,15 @@ import pandas as pd
 import datetime
 import drive_logic as drv
 import time
-import ast
-import re
+from constants import (
+    ACCURACY_REFERENCE_CRITERIA,
+    ACCURACY_SCORE_CRITERIA,
+    ADEQUACY_CRITERIA,
+    ANSWER_COL,
+    SAFETY_CRITERIA,
+    SAVE_RERUN_DELAY_SECONDS,
+)
+from utils import find_answer_column, initialize_session_state, normalize_id, parse_ranked_ddx
 
 st.set_page_config(page_title="의료 평가 시스템", layout="wide")
 
@@ -18,60 +25,7 @@ except Exception:
     st.error("gdrive 설정이 누락되었거나 형식이 올바르지 않습니다. Secrets를 확인해주세요.")
     st.stop()
 
-if 'auth' not in st.session_state:
-    st.session_state.auth = False
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = ""
-if 'login_fail_count' not in st.session_state:
-    st.session_state.login_fail_count = 0
-if 'lock_until' not in st.session_state:
-    st.session_state.lock_until = None
-if 'instruction_confirmed' not in st.session_state:
-    st.session_state.instruction_confirmed = False
-
-SAVE_RERUN_DELAY_SECONDS = 0.3
-
-ADEQUACY_CRITERIA = [
-    {"점수": 5, "평가기준": "최적의 후보군", "판정 기준": "3개 모두 구체적인 질병명이며, 증례의 임상 양상을 매우 높은 수준으로 반영함"},
-    {"점수": 4, "평가기준": "높은 유용성", "판정 기준": "2개의 진단명이 구체적이며, 전체 리스트가 진단의 우선순위를 정하는데 유용함"},
-    {"점수": 3, "평가기준": "제한적 유용성", "판정 기준": "1개 진단명만 구체적이며, 나머지는 모호한 진단(증상 기반)으로 구성됨"},
-    {"점수": 2, "평가기준": "낮은 우선순위", "판정 기준": "제시된 진단명들이 응급실 처치보다는 외래/추적 관찰용에 가까워 우선순위가 낮음"},
-    {"점수": 1, "평가기준": "부적절", "판정 기준": "진단명이 너무 포괄적이거나 개연성이 없어서 후속 검사/처방의 근거로 간주하기 어려움"},
-]
-
-SAFETY_CRITERIA = [
-    {"점수": 5, "평가기준": "높은 안전성", "판정 기준": "관련 병력 및 임상 양상에서 고려해야 할 고위험 질환이 모두 포함되어 있음. (3개 모두 포함)"},
-    {"점수": 4, "평가기준": "적합한 안전성", "판정 기준": "관련 병력에서 고려해야 할 치명적인 질환은 포함하였으나, 일부 고위험 항목이 누락됨. (2개 이상 포함)"},
-    {"점수": 3, "평가기준": "주의 필요", "판정 기준": "관련 병력에서 고려해야 할 고위험 질환을 1개 이상 포함했으나, 더 시급하거나 치명적인 질환이 누락됨"},
-    {"점수": 2, "평가기준": "불충분", "판정 기준": "명시적인 고위험 질환은 포함되지 않았으나, 가능성 있는 양성 질환 위주로 리스트를 구성함"},
-    {"점수": 1, "평가기준": "위험", "판정 기준": "관련 병력상 고위험 질환을 전혀 고려하지 않아 실제 임상 적용 시 환자 위해 가능성이 높음"},
-]
-
-
-def parse_ranked_ddx(raw_value):
-    if pd.isna(raw_value):
-        return []
-
-    raw_text = str(raw_value).strip()
-    if not raw_text:
-        return []
-
-    if raw_text.startswith("[") and raw_text.endswith("]"):
-        try:
-            parsed = ast.literal_eval(raw_text)
-            if isinstance(parsed, list):
-                return [str(item).strip() for item in parsed if str(item).strip()]
-        except (ValueError, SyntaxError):
-            pass
-
-    parts = re.split(r"[\n,;]+", raw_text)
-    cleaned = []
-    for part in parts:
-        item = part.strip()
-        item = re.sub(r"^\d+[\.\)]\s*", "", item)
-        if item:
-            cleaned.append(item)
-    return cleaned
+initialize_session_state(st.session_state)
 
 # --- 로그인 ---
 if not st.session_state.auth:
@@ -129,18 +83,26 @@ if not st.session_state.instruction_confirmed:
     st.markdown(
         """
         - 본 연구는 응급실 환경 내 생성형 인공지능 기반 감별진단 보조도구 (LLM-DDx)의 임상 적용 가능성을 탐색하기 위한 무작위 대조시험 입니다.
-        - 응급실 초진 기록을 기반으로 감별진단 목록을 생성하는 모델을 개발하고, 생성된 진단명 추론 결과를 의료진이 참고하여 진단 과정에 반영할 때 진단 정확성 및 임상 적합성을 평가하고자 합니다
-        - 평가에 사용되는 데이터는 총 10명의 전공의 선생님들께서 제한된 시간(1시간) 내 초진기록만을 참고하여 작성한 감별진단 후보목록으로써, Case그룹은 LLM-DDx를 참고하여감별진단을 작성하였습니다. (각 사례당 최소 3개의 감별진단 목록을 작성하였으며, Case의 경우 LLM-DDx를 참고하여 감별진단 후보군을 작성하였습니다.)
-        - 총 50사례의 초진기록을 기반으로 LLM-DD 보조 여부에 따른 감별진단을 3가지 척도에 따라 평가하고자 하며, 척도는 아래와 같습니다.
-        1. 적절성: 작성된 감별진단 후보군이 얼마나 구체적이며, 응급의학과 전문의의 임상적 추론 과정을 얼마나 정교하게 반영하였는지 평가
-        2. 안전성: 초진기록 및 관련 병력 기반 고위험 질환을 염두에 두어야 할 증상 혹은 징후를 적절하게 포함했는지 평가
+        - 응급실 초진 기록을 기반으로 감별진단 목록을 생성하는 모델을 개발하고, 생성된 진단명 추론 결과를 의료진이 참고하여 진단 과정에 반영할 때 진단 정확성, 적절성 그리고 안전성을 평가하고자 합니다.
+        - 평가에 사용되는 데이터는 총 10명의 전공의 선생님들께서 제한된 시간(1시간) 내 초진기록만을 참고하여 작성한 감별진단 후보목록으로써, Case그룹은 LLM-DDx를 참고하여감별진단을 작성하였습니다. (사례당 최소 3개의 감별진단명 작성)
+        - 총 50사례(총 500건, 사례당 10건)의 초진기록을 기반으로 LLM-DD 보조 여부에 따른 감별진단을 3가지 척도에 따라 평가하고자 하며, 척도는 아래와 같습니다.
+        1. 정확성: 작성된 감별진단 후보군 내 해당 사례에 대한 참고 진단명이 포함되어 있는지 평가
+        2. 적절성: 작성된 감별진단 후보군이 얼마나 구체적이며, 응급의학과 전문의의 임상적 추론 과정을 얼마나 정교하게 반영하였는지 평가
+        3. 안전성: 초진기록 및 관련 병력 기반 고위험 질환을 염두에 두어야 할 증상 혹은 징후를 적절하게 포함했는지 평가
         """
     )
 
-    st.subheader("적절성 점수 기준")
+    st.subheader("정확성")
+    st.caption("1) 참고 진단의 타당성")
+    st.dataframe(pd.DataFrame(ACCURACY_REFERENCE_CRITERIA), hide_index=True, use_container_width=True)
+
+    st.caption("2) 정확성 점수 기준")
+    st.dataframe(pd.DataFrame(ACCURACY_SCORE_CRITERIA), hide_index=True, use_container_width=True)
+
+    st.subheader("적절성")
     st.dataframe(pd.DataFrame(ADEQUACY_CRITERIA), hide_index=True, use_container_width=True)
 
-    st.subheader("안전성 점수 기준")
+    st.subheader("안전성")
     st.dataframe(pd.DataFrame(SAFETY_CRITERIA), hide_index=True, use_container_width=True)
 
     agree = st.checkbox("위 안내사항과 점수 기준을 확인했습니다.")
@@ -152,35 +114,9 @@ if not st.session_state.instruction_confirmed:
 # --- 데이터 로드 및 필터링 ---
 service = drv.get_gdrive_service()
 master_df = drv.load_csv(service, MASTER_FILE_ID)
-ANSWER_COL = "진단명-Free Text#30"
-
-# ID 정규화 함수: 1.0이나 " 1 " 같은 데이터를 모두 "1"로 통일
-def normalize_id(x):
-    try:
-        return str(int(float(x))).strip()
-    except (ValueError, TypeError):
-        return str(x).strip()
-
-
-def find_answer_column(df):
-    normalized = {str(c).strip(): c for c in df.columns}
-    if ANSWER_COL in normalized:
-        return normalized[ANSWER_COL]
-
-    for c in df.columns:
-        col = str(c).strip()
-        if col.startswith(ANSWER_COL):
-            return c
-
-    for c in df.columns:
-        col = str(c).strip()
-        if "진단명-Free Text" in col:
-            return c
-
-    return None
 
 master_df['eval_id_str'] = master_df['eval_id'].apply(normalize_id)
-answer_col_name = find_answer_column(master_df)
+answer_col_name = find_answer_column(master_df, ANSWER_COL)
 
 try:
     res_df = drv.get_existing_results(RESULT_SHEET_NAME)
@@ -314,23 +250,42 @@ else:
             else:
                 st.warning("정답 DDX 컬럼이 없어 아직 표시할 수 없습니다. evaluation_master.csv를 재생성해주세요.")
 
-    with col_eval:
-        st.subheader("📝 평가")
         with st.expander("점수 기준 보기", expanded=True):
+            st.markdown("**정확성 기준**")
+            st.caption("1) 참고 진단의 타당성")
+            st.dataframe(pd.DataFrame(ACCURACY_REFERENCE_CRITERIA), hide_index=True, use_container_width=True)
+            st.caption("2) 정확성 점수 기준")
+            st.dataframe(pd.DataFrame(ACCURACY_SCORE_CRITERIA), hide_index=True, use_container_width=True)
             st.markdown("**적절성 기준**")
             st.dataframe(pd.DataFrame(ADEQUACY_CRITERIA), hide_index=True, use_container_width=True)
             st.markdown("**안전성 기준**")
             st.dataframe(pd.DataFrame(SAFETY_CRITERIA), hide_index=True, use_container_width=True)
 
+    with col_eval:
+        st.subheader("📝 평가")
+        accuracy_ref_validity = st.radio(
+            "1-1. 정확성 - 참고 진단의 타당성",
+            [None, 1, 2, 3, 4, 5],
+            horizontal=True,
+            key=f"ac_ref_{current_case['eval_id']}",
+            format_func=lambda x: "선택" if x is None else str(x),
+        )
+        accuracy_score = st.radio(
+            "1-2. 정확성 - 정확성 점수 기준 평가",
+            [None, 1, 2, 3, 4, 5],
+            horizontal=True,
+            key=f"ac_{current_case['eval_id']}",
+            format_func=lambda x: "선택" if x is None else str(x),
+        )
         adequacy = st.radio(
-            "1. 적절성",
+            "2. 적절성",
             [None, 1, 2, 3, 4, 5],
             horizontal=True,
             key=f"ad_{current_case['eval_id']}",
             format_func=lambda x: "선택" if x is None else str(x),
         )
         safety = st.radio(
-            "2. 안전성",
+            "3. 안전성",
             [None, 1, 2, 3, 4, 5],
             horizontal=True,
             key=f"sf_{current_case['eval_id']}",
@@ -340,19 +295,26 @@ else:
 
         if st.button("저장 및 다음", use_container_width=True):
             with st.spinner("저장 중..."):
-                if adequacy is None or safety is None:
-                    st.error("적절성과 안전성 점수를 모두 선택해주세요.")
+                if (
+                    accuracy_ref_validity is None
+                    or accuracy_score is None
+                    or adequacy is None
+                    or safety is None
+                ):
+                    st.error("정확성(2개), 적절성, 안전성 점수를 모두 선택해주세요.")
                     st.stop()
 
                 new_row = [
                     normalize_id(current_case['eval_id']), # 정규화해서 저장
                     str(current_case['file_name']),
                     str(current_case['arm']),
+                    int(accuracy_ref_validity),
+                    int(accuracy_score),
                     int(adequacy),
                     int(safety),
                     str(comment).replace("\n", " "),
                     st.session_state.user_id,
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 ]
                 inserted = drv.append_result_to_sheet(RESULT_SHEET_NAME, new_row)
                 if inserted:
