@@ -253,6 +253,17 @@ else:
     col_text, col_eval = st.columns([2, 1])
 
     with col_text:
+        with st.expander("점수 기준 보기", expanded=False):
+            st.markdown("**정확성 기준**")
+            st.caption("1) 참고 진단의 타당성")
+            st.dataframe(pd.DataFrame(ACCURACY_REFERENCE_CRITERIA), hide_index=True, use_container_width=True)
+            st.caption("2) 정확성 점수 기준")
+            st.dataframe(pd.DataFrame(ACCURACY_SCORE_CRITERIA), hide_index=True, use_container_width=True)
+            st.markdown("**적절성 기준**")
+            st.dataframe(pd.DataFrame(ADEQUACY_CRITERIA), hide_index=True, use_container_width=True)
+            st.markdown("**안전성 기준**")
+            st.dataframe(pd.DataFrame(SAFETY_CRITERIA), hide_index=True, use_container_width=True)
+
         reference_case = current_case_batch_df.iloc[0]
         with st.expander("📖 초진기록-현병력 발췌", expanded=True):
             st.text(reference_case['현병력-Free Text#13'])
@@ -266,17 +277,6 @@ else:
                     st.info("정답 DDX 값이 비어 있습니다.")
             else:
                 st.warning("정답 DDX 컬럼이 없어 아직 표시할 수 없습니다. evaluation_master.csv를 재생성해주세요.")
-
-        with st.expander("점수 기준 보기", expanded=True):
-            st.markdown("**정확성 기준**")
-            st.caption("1) 참고 진단의 타당성")
-            st.dataframe(pd.DataFrame(ACCURACY_REFERENCE_CRITERIA), hide_index=True, use_container_width=True)
-            st.caption("2) 정확성 점수 기준")
-            st.dataframe(pd.DataFrame(ACCURACY_SCORE_CRITERIA), hide_index=True, use_container_width=True)
-            st.markdown("**적절성 기준**")
-            st.dataframe(pd.DataFrame(ADEQUACY_CRITERIA), hide_index=True, use_container_width=True)
-            st.markdown("**안전성 기준**")
-            st.dataframe(pd.DataFrame(SAFETY_CRITERIA), hide_index=True, use_container_width=True)
 
     with col_eval:
         st.subheader(f"📝 증례 일괄 평가 ({len(current_case_batch_df)}명)")
@@ -301,28 +301,28 @@ else:
 
                 st.radio(
                     "1-1. 정확성 - 참고 진단의 타당성",
-                    [None, 1, 2, 3, 4, 5],
+                    [None, 5, 4, 3, 2, 1],
                     horizontal=True,
                     key=f"ac_ref_{eval_id}",
                     format_func=lambda x: "선택" if x is None else str(x),
                 )
                 st.radio(
                     "1-2. 정확성 - 정확성 점수 기준 평가",
-                    [None, 1, 2, 3, 4, 5],
+                    [None, 5, 4, 3, 2, 1],
                     horizontal=True,
                     key=f"ac_{eval_id}",
                     format_func=lambda x: "선택" if x is None else str(x),
                 )
                 st.radio(
                     "2. 적절성",
-                    [None, 1, 2, 3, 4, 5],
+                    [None, 5, 4, 3, 2, 1],
                     horizontal=True,
                     key=f"ad_{eval_id}",
                     format_func=lambda x: "선택" if x is None else str(x),
                 )
                 st.radio(
                     "3. 안전성",
-                    [None, 1, 2, 3, 4, 5],
+                    [None, 5, 4, 3, 2, 1],
                     horizontal=True,
                     key=f"sf_{eval_id}",
                     format_func=lambda x: "선택" if x is None else str(x),
