@@ -39,47 +39,10 @@ def load_csv(service, file_id):
     return pd.read_csv(fh)
 
 def append_result_to_sheet(sheet_name, row_data):
-    """구글 시트 맨 아래에 평가 결과 추가 (중복 저장 방지)"""
+    """구글 시트 맨 아래에 평가 결과 추가"""
     client = get_gspread_client()
     sheet = client.open(sheet_name).sheet1
-
-    # row_data schema: [eval_id, file_name, arm, adequacy, safety, comment, user_id, timestamp]
-    eval_id = str(row_data[0]).strip()
-    user_id = str(row_data[6]).strip()
-
-    existing = sheet.get_all_records()
-    for row in existing:
-        existing_eval_id = str(row.get("eval_id", "")).strip()
-        existing_user_id = str(row.get("user_id", "")).strip()
-        if existing_eval_id == eval_id and existing_user_id == user_id:
-            return False
-
     sheet.append_row(row_data)
-
-    # 동시성 상황에서 중복 append가 발생할 수 있어, 저장 직후 키 기준으로 중복 행을 정리한다.
-    all_values = sheet.get_all_values()
-    if not all_values:
-        return True
-
-    headers = [str(h).strip() for h in all_values[0]]
-    if "eval_id" not in headers or "user_id" not in headers:
-        return True
-
-    eval_col_idx = headers.index("eval_id")
-    user_col_idx = headers.index("user_id")
-
-    matched_rows = []
-    for row_idx, row in enumerate(all_values[1:], start=2):
-        row_eval_id = str(row[eval_col_idx]).strip() if eval_col_idx < len(row) else ""
-        row_user_id = str(row[user_col_idx]).strip() if user_col_idx < len(row) else ""
-        if row_eval_id == eval_id and row_user_id == user_id:
-            matched_rows.append(row_idx)
-
-    if len(matched_rows) > 1:
-        # 가장 먼저 저장된 1개를 남기고 나머지를 삭제
-        for dup_row_idx in reversed(matched_rows[1:]):
-            sheet.delete_rows(dup_row_idx)
-
     return True
 
 

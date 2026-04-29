@@ -26,6 +26,8 @@ except Exception:
     st.stop()
 
 initialize_session_state(st.session_state)
+if "done_ids_cache" not in st.session_state:
+    st.session_state.done_ids_cache = {}
 
 # --- 로그인 ---
 if not st.session_state.auth:
@@ -129,11 +131,15 @@ try:
         user_res = res_df[user_mask]
         # 시트의 eval_id도 정규화
         done_ids = user_res['eval_id'].apply(normalize_id).unique().tolist()
+        st.session_state.done_ids_cache[current_user] = done_ids
     else:
-        done_ids = []
+        current_user = st.session_state.user_id
+        cached_done_ids = st.session_state.done_ids_cache.get(current_user, [])
+        done_ids = cached_done_ids
 except Exception as e:
     st.error("평가 진행 상태를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
-    done_ids = []
+    current_user = st.session_state.user_id
+    done_ids = st.session_state.done_ids_cache.get(current_user, [])
 
 # 디버깅용 (사이드바에서 확인 가능)
 st.sidebar.write(f"현재 유저: {st.session_state.user_id}")
@@ -211,37 +217,48 @@ if todo_df.empty:
     st.balloons()
     st.success("🎉 모든 평가 완료!")
 else:
-    current_case = todo_df.iloc[0]
-    current_case_file = str(current_case["file_name"])
+    current_case_file = str(todo_df.iloc[0]["file_name"])
     current_case_label = str(
         file_order_df.loc[file_order_df["file_name"] == current_case_file, "case_label"].iloc[0]
     )
-    current_case_done = int(case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "완료개수"].iloc[0])
-    current_case_total = int(case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "총개수"].iloc[0])
+    current_case_done = int(
+        case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "완료개수"].iloc[0]
+    )
+    current_case_total = int(
+        case_progress_df.loc[case_progress_df["file_name"] == current_case_file, "총개수"].iloc[0]
+    )
+    current_case_batch_df = (
+        todo_df[todo_df["file_name"] == current_case_file]
+        .sort_values("_master_order")
+        .reset_index(drop=True)
+    )
+    # 증례 내 작성자 번호를 고정하기 위한 기준(저장되어도 번호 유지)
+    current_case_all_df = (
+        master_df[master_df["file_name"] == current_case_file]
+        .sort_values("_master_order")
+        .reset_index(drop=True)
+    )
+    current_case_all_df["writer_no"] = current_case_all_df.index + 1
+    writer_no_map = {
+        normalize_id(r["eval_id"]): int(r["writer_no"])
+        for _, r in current_case_all_df.iterrows()
+    }
 
-    st.caption(f"현재 증례: {current_case_label} ({current_case_done}/{current_case_total} 완료)")
+    st.caption(
+        f"현재 증례: {current_case_label} ({current_case_done}/{current_case_total} 완료) | "
+        f"이번 화면 평가 대상: {len(current_case_batch_df)}명"
+    )
     st.progress(len(done_ids) / len(master_df), text=f"진행도: {len(done_ids)} / {len(master_df)}")
 
     col_text, col_eval = st.columns([2, 1])
 
     with col_text:
+        reference_case = current_case_batch_df.iloc[0]
         with st.expander("📖 초진기록-현병력 발췌", expanded=True):
-            st.text(current_case['현병력-Free Text#13'])
-        with st.expander("📋 감별진단 리스트", expanded=True):
-            ranked_ddx = parse_ranked_ddx(current_case['entered_ddx_list'])
-            if ranked_ddx:
-                ddx_table = pd.DataFrame(
-                    {
-                        "우선순위": [f"{i}순위" for i in range(1, len(ranked_ddx) + 1)],
-                        "감별진단": ranked_ddx,
-                    }
-                )
-                st.dataframe(ddx_table, hide_index=True, use_container_width=True)
-            else:
-                st.info(str(current_case['entered_ddx_list']))
+            st.text(reference_case['현병력-Free Text#13'])
         with st.expander("✅ 정답 진단명 (Reference)", expanded=True):
             if answer_col_name:
-                raw_answer = current_case[answer_col_name]
+                raw_answer = reference_case[answer_col_name]
                 answer_text = "" if pd.isna(raw_answer) else str(raw_answer).strip()
                 if answer_text:
                     st.text(answer_text)
@@ -262,64 +279,145 @@ else:
             st.dataframe(pd.DataFrame(SAFETY_CRITERIA), hide_index=True, use_container_width=True)
 
     with col_eval:
-        st.subheader("📝 평가")
-        accuracy_ref_validity = st.radio(
-            "1-1. 정확성 - 참고 진단의 타당성",
-            [None, 1, 2, 3, 4, 5],
-            horizontal=True,
-            key=f"ac_ref_{current_case['eval_id']}",
-            format_func=lambda x: "선택" if x is None else str(x),
-        )
-        accuracy_score = st.radio(
-            "1-2. 정확성 - 정확성 점수 기준 평가",
-            [None, 1, 2, 3, 4, 5],
-            horizontal=True,
-            key=f"ac_{current_case['eval_id']}",
-            format_func=lambda x: "선택" if x is None else str(x),
-        )
-        adequacy = st.radio(
-            "2. 적절성",
-            [None, 1, 2, 3, 4, 5],
-            horizontal=True,
-            key=f"ad_{current_case['eval_id']}",
-            format_func=lambda x: "선택" if x is None else str(x),
-        )
-        safety = st.radio(
-            "3. 안전성",
-            [None, 1, 2, 3, 4, 5],
-            horizontal=True,
-            key=f"sf_{current_case['eval_id']}",
-            format_func=lambda x: "선택" if x is None else str(x),
-        )
-        comment = st.text_area("의견", key=f"cm_{current_case['eval_id']}")
+        st.subheader(f"📝 증례 일괄 평가 ({len(current_case_batch_df)}명)")
 
-        if st.button("저장 및 다음", use_container_width=True):
-            with st.spinner("저장 중..."):
-                if (
-                    accuracy_ref_validity is None
-                    or accuracy_score is None
-                    or adequacy is None
-                    or safety is None
-                ):
-                    st.error("정확성(2개), 적절성, 안전성 점수를 모두 선택해주세요.")
+        incomplete_count = 0
+        for idx, row in current_case_batch_df.iterrows():
+            eval_id = row["eval_id"]
+            writer_no = writer_no_map.get(normalize_id(eval_id), idx + 1)
+            panel_title = f"{writer_no}. 작성자 {writer_no}"
+            with st.expander(panel_title, expanded=(idx == 0)):
+                ranked_ddx = parse_ranked_ddx(row["entered_ddx_list"])
+                if ranked_ddx:
+                    ddx_table = pd.DataFrame(
+                        {
+                            "우선순위": [f"{i}순위" for i in range(1, len(ranked_ddx) + 1)],
+                            "감별진단": ranked_ddx,
+                        }
+                    )
+                    st.dataframe(ddx_table, hide_index=True, use_container_width=True)
+                else:
+                    st.info(str(row["entered_ddx_list"]))
+
+                st.radio(
+                    "1-1. 정확성 - 참고 진단의 타당성",
+                    [None, 1, 2, 3, 4, 5],
+                    horizontal=True,
+                    key=f"ac_ref_{eval_id}",
+                    format_func=lambda x: "선택" if x is None else str(x),
+                )
+                st.radio(
+                    "1-2. 정확성 - 정확성 점수 기준 평가",
+                    [None, 1, 2, 3, 4, 5],
+                    horizontal=True,
+                    key=f"ac_{eval_id}",
+                    format_func=lambda x: "선택" if x is None else str(x),
+                )
+                st.radio(
+                    "2. 적절성",
+                    [None, 1, 2, 3, 4, 5],
+                    horizontal=True,
+                    key=f"ad_{eval_id}",
+                    format_func=lambda x: "선택" if x is None else str(x),
+                )
+                st.radio(
+                    "3. 안전성",
+                    [None, 1, 2, 3, 4, 5],
+                    horizontal=True,
+                    key=f"sf_{eval_id}",
+                    format_func=lambda x: "선택" if x is None else str(x),
+                )
+                st.text_area("의견", key=f"cm_{eval_id}")
+
+                single_save_clicked = st.button(
+                    "이 작성자 저장",
+                    key=f"save_single_{eval_id}",
+                    use_container_width=True,
+                )
+                if single_save_clicked:
+                    if (
+                        st.session_state.get(f"ac_ref_{eval_id}") is None
+                        or st.session_state.get(f"ac_{eval_id}") is None
+                        or st.session_state.get(f"ad_{eval_id}") is None
+                        or st.session_state.get(f"sf_{eval_id}") is None
+                    ):
+                        st.error("이 작성자의 점수를 모두 선택해주세요.")
+                        st.stop()
+
+                    with st.spinner("저장 중..."):
+                        new_row = [
+                            normalize_id(row["eval_id"]),
+                            str(row["file_name"]),
+                            str(row["arm"]),
+                            int(st.session_state[f"ac_ref_{eval_id}"]),
+                            int(st.session_state[f"ac_{eval_id}"]),
+                            int(st.session_state[f"ad_{eval_id}"]),
+                            int(st.session_state[f"sf_{eval_id}"]),
+                            str(st.session_state.get(f"cm_{eval_id}", "")).replace("\n", " "),
+                            st.session_state.user_id,
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        ]
+                        inserted = drv.append_result_to_sheet(RESULT_SHEET_NAME, new_row)
+                        if inserted:
+                            current_user = st.session_state.user_id
+                            current_cache = st.session_state.done_ids_cache.get(current_user, [])
+                            current_cache_set = set(current_cache)
+                            current_cache_set.add(normalize_id(row["eval_id"]))
+                            st.session_state.done_ids_cache[current_user] = list(current_cache_set)
+                            st.toast("저장되었습니다.")
+                        else:
+                            st.warning("이미 저장된 항목입니다.")
+                        time.sleep(SAVE_RERUN_DELAY_SECONDS)
+                        st.rerun()
+
+            if (
+                st.session_state.get(f"ac_ref_{eval_id}") is None
+                or st.session_state.get(f"ac_{eval_id}") is None
+                or st.session_state.get(f"ad_{eval_id}") is None
+                or st.session_state.get(f"sf_{eval_id}") is None
+            ):
+                incomplete_count += 1
+
+        st.caption(
+            f"현재 화면 미입력: {incomplete_count} / {len(current_case_batch_df)}명 | "
+            "각 작성자별로 저장하면 자동으로 다음 미저장 항목만 남습니다."
+        )
+
+        if st.button("해당 증례 일괄 저장", use_container_width=True):
+            with st.spinner("일괄 저장 중..."):
+                if incomplete_count > 0:
+                    st.error("일괄 저장 전, 남은 작성자의 점수를 모두 입력해주세요.")
                     st.stop()
 
-                new_row = [
-                    normalize_id(current_case['eval_id']), # 정규화해서 저장
-                    str(current_case['file_name']),
-                    str(current_case['arm']),
-                    int(accuracy_ref_validity),
-                    int(accuracy_score),
-                    int(adequacy),
-                    int(safety),
-                    str(comment).replace("\n", " "),
-                    st.session_state.user_id,
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                ]
-                inserted = drv.append_result_to_sheet(RESULT_SHEET_NAME, new_row)
-                if inserted:
-                    st.toast("저장되었습니다!")
-                else:
-                    st.warning("이미 저장된 항목입니다. 다음 케이스로 이동합니다.")
-                time.sleep(SAVE_RERUN_DELAY_SECONDS)  # 시트 반영 대기
+                inserted_count = 0
+                skipped_count = 0
+                for _, row in current_case_batch_df.iterrows():
+                    eval_id = row["eval_id"]
+                    new_row = [
+                        normalize_id(row["eval_id"]),
+                        str(row["file_name"]),
+                        str(row["arm"]),
+                        int(st.session_state[f"ac_ref_{eval_id}"]),
+                        int(st.session_state[f"ac_{eval_id}"]),
+                        int(st.session_state[f"ad_{eval_id}"]),
+                        int(st.session_state[f"sf_{eval_id}"]),
+                        str(st.session_state.get(f"cm_{eval_id}", "")).replace("\n", " "),
+                        st.session_state.user_id,
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    ]
+                    inserted = drv.append_result_to_sheet(RESULT_SHEET_NAME, new_row)
+                    if inserted:
+                        current_user = st.session_state.user_id
+                        current_cache = st.session_state.done_ids_cache.get(current_user, [])
+                        current_cache_set = set(current_cache)
+                        current_cache_set.add(normalize_id(row["eval_id"]))
+                        st.session_state.done_ids_cache[current_user] = list(current_cache_set)
+                        inserted_count += 1
+                    else:
+                        skipped_count += 1
+
+                st.toast(f"일괄 저장 완료: {inserted_count}건")
+                if skipped_count > 0:
+                    st.warning(f"중복으로 건너뜀: {skipped_count}건")
+                time.sleep(SAVE_RERUN_DELAY_SECONDS)
                 st.rerun()
