@@ -285,7 +285,7 @@ else:
         for idx, row in current_case_batch_df.iterrows():
             eval_id = row["eval_id"]
             writer_no = writer_no_map.get(normalize_id(eval_id), idx + 1)
-            panel_title = f"{writer_no}. 작성자 {writer_no}"
+            panel_title = f"작성자 {writer_no}"
             with st.expander(panel_title, expanded=(idx == 0)):
                 ranked_ddx = parse_ranked_ddx(row["entered_ddx_list"])
                 if ranked_ddx:
