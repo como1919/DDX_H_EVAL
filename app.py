@@ -280,7 +280,56 @@ else:
 
     with col_eval:
         st.subheader(f"📝 증례 일괄 평가 ({len(current_case_batch_df)}명)")
+        case_ref_key = f"case_ref_{current_case_file}"
+        case_ref_score = st.radio(
+            "1-1. 참고 진단의 타당성 (증례 공통)",
+            [None, 5, 4, 3, 2, 1],
+            horizontal=True,
+            key=case_ref_key,
+            format_func=lambda x: "선택" if x is None else str(x),
+        )
 
+        if case_ref_score is None:
+            st.info("먼저 1-1 점수를 선택해주세요.")
+            st.stop()
+
+        if int(case_ref_score) <= 2:
+            st.warning("1-1 점수가 2점 이하이므로, 해당 증례는 세부 평가 없이 다음 증례로 이동합니다.")
+            if st.button("해당 증례 저장 및 다음 증례", use_container_width=True):
+                with st.spinner("스킵 저장 중..."):
+                    inserted_count = 0
+                    skipped_count = 0
+                    for _, row in current_case_batch_df.iterrows():
+                        new_row = [
+                            normalize_id(row["eval_id"]),
+                            str(row["file_name"]),
+                            str(row["arm"]),
+                            int(case_ref_score),
+                            "",
+                            "",
+                            "",
+                            "[SKIPPED] 참고 진단의 타당성 2점 이하",
+                            st.session_state.user_id,
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        ]
+                        inserted = drv.append_result_to_sheet(RESULT_SHEET_NAME, new_row)
+                        if inserted:
+                            current_user = st.session_state.user_id
+                            current_cache = st.session_state.done_ids_cache.get(current_user, [])
+                            current_cache_set = set(current_cache)
+                            current_cache_set.add(normalize_id(row["eval_id"]))
+                            st.session_state.done_ids_cache[current_user] = list(current_cache_set)
+                            inserted_count += 1
+                        else:
+                            skipped_count += 1
+                    st.toast(f"스킵 저장 완료: {inserted_count}건")
+                    if skipped_count > 0:
+                        st.warning(f"중복으로 건너뜀: {skipped_count}건")
+                    time.sleep(SAVE_RERUN_DELAY_SECONDS)
+                    st.rerun()
+            st.stop()
+
+        st.success("1-1 점수가 3점 이상이므로, 작성자별 세부 평가를 진행합니다.")
         incomplete_count = 0
         for idx, row in current_case_batch_df.iterrows():
             eval_id = row["eval_id"]
@@ -300,14 +349,7 @@ else:
                     st.info(str(row["entered_ddx_list"]))
 
                 st.radio(
-                    "1-1. 정확성 - 참고 진단의 타당성",
-                    [None, 5, 4, 3, 2, 1],
-                    horizontal=True,
-                    key=f"ac_ref_{eval_id}",
-                    format_func=lambda x: "선택" if x is None else str(x),
-                )
-                st.radio(
-                    "1-2. 정확성 - 정확성 점수 기준 평가",
+                    "1-2. 정확성",
                     [None, 5, 4, 3, 2, 1],
                     horizontal=True,
                     key=f"ac_{eval_id}",
@@ -336,8 +378,7 @@ else:
                 )
                 if single_save_clicked:
                     if (
-                        st.session_state.get(f"ac_ref_{eval_id}") is None
-                        or st.session_state.get(f"ac_{eval_id}") is None
+                        st.session_state.get(f"ac_{eval_id}") is None
                         or st.session_state.get(f"ad_{eval_id}") is None
                         or st.session_state.get(f"sf_{eval_id}") is None
                     ):
@@ -349,7 +390,7 @@ else:
                             normalize_id(row["eval_id"]),
                             str(row["file_name"]),
                             str(row["arm"]),
-                            int(st.session_state[f"ac_ref_{eval_id}"]),
+                            int(case_ref_score),
                             int(st.session_state[f"ac_{eval_id}"]),
                             int(st.session_state[f"ad_{eval_id}"]),
                             int(st.session_state[f"sf_{eval_id}"]),
@@ -371,8 +412,7 @@ else:
                         st.rerun()
 
             if (
-                st.session_state.get(f"ac_ref_{eval_id}") is None
-                or st.session_state.get(f"ac_{eval_id}") is None
+                st.session_state.get(f"ac_{eval_id}") is None
                 or st.session_state.get(f"ad_{eval_id}") is None
                 or st.session_state.get(f"sf_{eval_id}") is None
             ):
@@ -397,7 +437,7 @@ else:
                         normalize_id(row["eval_id"]),
                         str(row["file_name"]),
                         str(row["arm"]),
-                        int(st.session_state[f"ac_ref_{eval_id}"]),
+                        int(case_ref_score),
                         int(st.session_state[f"ac_{eval_id}"]),
                         int(st.session_state[f"ad_{eval_id}"]),
                         int(st.session_state[f"sf_{eval_id}"]),
